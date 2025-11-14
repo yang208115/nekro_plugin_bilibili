@@ -37,6 +37,12 @@ class BasicConfig(ConfigBase):
         description="主播的昵称或名字，用于通知消息中显示"
     )
 
+    is_at_all: bool = Field(
+        default=False,
+        title="是否@全体成员",
+        description="是否@全体成员"
+    )
+
 
 
 # 获取配置
