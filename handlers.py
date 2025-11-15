@@ -32,11 +32,12 @@ async def notice(
         elif notification_type == NotificationType.LIVE_START:
             message = f"{config.streamer_name}开播啦!\n地址: https://live.bilibili.com/{room_info.room_id} \n标题:{room_info.title}"
 
-    await message_service.push_system_message(
-        chat_key=f"onebot_v11-group_{config.notification_group}",
-        agent_messages=message,
-        trigger_agent=True,
-    )
+    if config.is_push_system:
+        await message_service.push_system_message(
+            chat_key=f"onebot_v11-group_{config.notification_group}",
+            agent_messages=message,
+            trigger_agent=True,
+        )
 
     await send_message(message)
 

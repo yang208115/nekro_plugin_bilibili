@@ -23,7 +23,7 @@ class BasicConfig(ConfigBase):
     check_interval: int = Field(
         default=10,
         title="轮询间隔（秒）",
-        description="检查直播状态的间隔时间，建议不要设置太短避免被限制"
+        description="检查直播状态的间隔时间，建议不要设置太短避免被限制",
     )
 
     notification_group: str = Field(
@@ -47,6 +47,12 @@ class BasicConfig(ConfigBase):
         default=False,
         title="是否@全体成员",
         description="是否@全体成员",
+    )
+
+    is_push_system: bool = Field(
+        default=True,
+        title="是否唤醒AI",
+        description="是否唤醒AI",
     )
 
 
