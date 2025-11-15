@@ -1,27 +1,32 @@
 import asyncio
-import time
 import random
-from typing import Optional, Dict, Any
+import time
 from enum import Enum
+from typing import Any, Dict, Optional
 
-import requests
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
+import httpx
+
 
 class RequestType(str, Enum):
-    POST = 'post'
-    GET = 'get'
+    POST = "post"
+    GET = "get"
 
-class ApiEndpoints:
+
+class ApiEndpoints(str, Enum):
     """API 端点常量定义"""
+
     LIVE_ROOM_INFO = "https://api.live.bilibili.com/room/v1/Room/get_info"
-    LIVE_ROOM_GUARD_TAB = "https://api.live.bilibili.com/xlive/app-room/v2/guardTab/topListNew"
+    LIVE_ROOM_GUARD_TAB = (
+        "https://api.live.bilibili.com/xlive/app-room/v2/guardTab/topListNew"
+    )
     LIVE_ROOM_FANS_MEMBERS_RANK = "https://api.live.bilibili.com/xlive/general-interface/v1/rank/getFansMembersRank"
     LIVE_ROOM_ONLINE_GOLD_RANK = "https://api.live.bilibili.com/xlive/general-interface/v1/rank/getOnlineGoldRank"
     LIVE_ROOM_DANMU = "https://api.live.bilibili.com/ajax/msg"
 
+
 class DefaultHeaders:
     """默认请求头配置"""
+
     USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36 Edg/141.0.0.0"
     BASE_HEADERS = {
         "User-Agent": USER_AGENT,
@@ -34,9 +39,10 @@ class DefaultHeaders:
         "Origin": "https://live.bilibili.com",
     }
 
+
 class ApiClientError(Exception):
     """API 客户端自定义异常"""
-    pass
+
 
 class ApiClient:
     def __init__(self, timeout: int = 10, max_retries: int = 3):
@@ -50,30 +56,21 @@ class ApiClient:
         self.timeout = timeout
         self.max_retries = max_retries
 
-        # 创建带重试策略的 session
-        self.session = requests.Session()
-
-        # 配置重试策略
-        retry_strategy = Retry(
-            total=max_retries,
-            backoff_factor=1,
-            status_forcelist=[429, 500, 502, 503, 504],
-            allowed_methods=["HEAD", "GET", "OPTIONS"]
+        # 创建 httpx 异步客户端
+        self.client = httpx.AsyncClient(
+            timeout=timeout,
+            headers=DefaultHeaders.BASE_HEADERS,
+            follow_redirects=True,
         )
 
-        adapter = HTTPAdapter(max_retries=retry_strategy)
-        self.session.mount("http://", adapter)
-        self.session.mount("https://", adapter)
-
-        # 设置默认 headers
-        self.session.headers.update(DefaultHeaders.BASE_HEADERS)
-
-    def _make_request(self,
-                      url: str,
-                      method: RequestType,
-                      params: Optional[Dict[str, Any]] = None,
-                      headers: Optional[Dict[str, str]] = None,
-                      **kwargs) -> requests.Response:
+    async def _make_request(
+        self,
+        url: str,
+        method: RequestType,
+        params: Optional[Dict[str, Any]] = None,
+        headers: Optional[Dict[str, str]] = None,
+        **kwargs,
+    ) -> httpx.Response:
         """
         发送 HTTP 请求的通用方法
 
@@ -82,10 +79,10 @@ class ApiClient:
             method: 请求方法
             params: 查询参数
             headers: 请求头
-            **kwargs: 其他 requests 参数
+            **kwargs: 其他 httpx 参数
 
         Returns:
-            requests.Response 对象
+            httpx.Response 对象
 
         Raises:
             ApiClientError: 请求失败时抛出
@@ -98,60 +95,46 @@ class ApiClient:
         for attempt in range(1, self.max_retries + 1):
             try:
                 if method == RequestType.GET:
-                    response = self.session.get(
+                    response = await self.client.get(
                         url,
                         params=params,
                         headers=request_headers,
-                        timeout=self.timeout,
-                        **kwargs
+                        **kwargs,
                     )
                 elif method == RequestType.POST:
-                    response = self.session.post(
+                    response = await self.client.post(
                         url,
                         params=params,
                         headers=request_headers,
-                        timeout=self.timeout,
-                        **kwargs
+                        **kwargs,
                     )
                 else:
                     raise ApiClientError(f"不支持的请求方法: {method}")
 
+            except httpx.TimeoutException as e:
+                if attempt == self.max_retries:
+                    raise ApiClientError(
+                        f"请求超时（重试 {self.max_retries} 次后）: {e}",
+                    ) from e
+                await asyncio.sleep(random.uniform(1, 2))
+                continue
+
+            except httpx.RequestError as e:
+                if attempt == self.max_retries:
+                    raise ApiClientError(
+                        f"请求失败（重试 {self.max_retries} 次后）: {e}",
+                    ) from e
+                await asyncio.sleep(random.uniform(1, 2))
+                continue
+
+            else:
                 response.raise_for_status()
                 return response
 
-            except requests.exceptions.Timeout as e:
-                if attempt == self.max_retries:
-                    raise ApiClientError(f"请求超时（重试 {self.max_retries} 次后）: {e}")
-                time.sleep(random.uniform(1, 2))
+        # 如果循环正常结束但没有返回响应，抛出异常
+        raise ApiClientError("请求失败：所有重试均未成功")
 
-            except requests.exceptions.RequestException as e:
-                if attempt == self.max_retries:
-                    raise ApiClientError(f"请求失败（重试 {self.max_retries} 次后）: {e}")
-                time.sleep(random.uniform(1, 2))
 
-    async def _get_request(self,
-                           url: str,
-                           method: RequestType,
-                           params: Optional[Dict[str, Any]] = None,
-                           headers: Optional[Dict[str, str]] = None) -> requests.Response:
-        """
-        异步包装的请求方法（保持向后兼容）
-
-        Args:
-            url: 请求 URL
-            method: 请求方法
-            params: 查询参数
-            headers: 请求头
-
-        Returns:
-            requests.Response 对象
-        """
-        loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(
-            None,
-            self._make_request,
-            url, method, params, headers
-        )
 
     async def get_live_room_info(self, room_id: int) -> Dict[str, Any]:
         """
@@ -166,26 +149,37 @@ class ApiClient:
         Raises:
             ApiClientError: API 调用失败时抛出
         """
-        params = {'room_id': room_id}
+        params = {"room_id": room_id}
         headers = DefaultHeaders.BASE_HEADERS.copy()
 
+        def _handle_api_error(data: Dict[str, Any]) -> None:
+            """处理 API 错误响应"""
+            raise ApiClientError(data.get("message", "未知 API 错误"))
+
         try:
-            response = await self._get_request(
+            response = await self._make_request(
                 ApiEndpoints.LIVE_ROOM_INFO,
                 RequestType.GET,
                 params,
-                headers
+                headers,
             )
             data = response.json()
             if data.get("code") != 0:
-                raise ApiClientError(data.get("message", "未知 API 错误"))
+                _handle_api_error(data)
             return data["data"]
         except Exception as e:
             if isinstance(e, ApiClientError):
                 raise
-            raise ApiClientError(f"获取直播间信息失败: {e}")
-    
-    async def get_live_room_guard_tab(self, roomid: int, ruid: int, page: int, page_size: int = 30, sort: int = 0) -> Dict[str, Any]:
+            raise ApiClientError(f"获取直播间信息失败: {e}") from e
+
+    async def get_live_room_guard_tab(
+        self,
+        roomid: int,
+        ruid: int,
+        page: int,
+        page_size: int = 30,
+        sort: int = 0,
+    ) -> Dict[str, Any]:
         """
         获取直播间大航海成员列表
 
@@ -211,24 +205,33 @@ class ApiClient:
         }
         headers = DefaultHeaders.BASE_HEADERS.copy()
 
+        def _handle_api_error(data: Dict[str, Any]) -> None:
+            """处理 API 错误响应"""
+            raise ApiClientError(data.get("message", "未知 API 错误"))
+
         try:
-            response = await self._get_request(
+            response = await self._make_request(
                 ApiEndpoints.LIVE_ROOM_GUARD_TAB,
                 RequestType.GET,
                 params,
-                headers
+                headers,
             )
             data = response.json()
             if data.get("code") != 0:
-                raise ApiClientError(data.get("message", "未知 API 错误"))
+                _handle_api_error(data)
             return data["data"]
         except Exception as e:
             if isinstance(e, ApiClientError):
                 raise
-            raise ApiClientError(f"获取大航海成员失败: {e}")
+            raise ApiClientError(f"获取大航海成员失败: {e}") from e
 
-    
-    async def get_live_room_fans_members_rank(self, ruid: int, page: int, page_size: int = 30, rank_type: int = 1) -> Dict[str, Any]:
+    async def get_live_room_fans_members_rank(
+        self,
+        ruid: int,
+        page: int,
+        page_size: int = 30,
+        rank_type: int = 1,
+    ) -> Dict[str, Any]:
         """
         获取直播间粉丝团成员排行
 
@@ -253,23 +256,33 @@ class ApiClient:
         }
         headers = DefaultHeaders.BASE_HEADERS.copy()
 
+        def _handle_api_error(data: Dict[str, Any]) -> None:
+            """处理 API 错误响应"""
+            raise ApiClientError(data.get("message", "未知 API 错误"))
+
         try:
-            response = await self._get_request(
+            response = await self._make_request(
                 ApiEndpoints.LIVE_ROOM_FANS_MEMBERS_RANK,
                 RequestType.GET,
                 params,
-                headers
+                headers,
             )
             data = response.json()
             if data.get("code") != 0:
-                raise ApiClientError(data.get("message", "未知 API 错误"))
+                _handle_api_error(data)
             return data["data"]
         except Exception as e:
             if isinstance(e, ApiClientError):
                 raise
-            raise ApiClientError(f"获取粉丝团成员排行失败: {e}")
+            raise ApiClientError(f"获取粉丝团成员排行失败: {e}") from e
 
-    async def get_live_room_online_gold_rank(self, room_id: int, ruid: int, page: int, page_size: int = 50) -> Dict[str, Any]:
+    async def get_live_room_online_gold_rank(
+        self,
+        room_id: int,
+        ruid: int,
+        page: int,
+        page_size: int = 50,
+    ) -> Dict[str, Any]:
         """
         获取直播间在线金瓜子排行
 
@@ -293,21 +306,25 @@ class ApiClient:
         }
         headers = DefaultHeaders.BASE_HEADERS.copy()
 
+        def _handle_api_error(data: Dict[str, Any]) -> None:
+            """处理 API 错误响应"""
+            raise ApiClientError(data.get("message", "未知 API 错误"))
+
         try:
-            response = await self._get_request(
+            response = await self._make_request(
                 ApiEndpoints.LIVE_ROOM_ONLINE_GOLD_RANK,
                 RequestType.GET,
                 params,
-                headers
+                headers,
             )
             data = response.json()
             if data.get("code") != 0:
-                raise ApiClientError(data.get("message", "未知 API 错误"))
+                _handle_api_error(data)
             return data["data"]
         except Exception as e:
             if isinstance(e, ApiClientError):
                 raise
-            raise ApiClientError(f"获取在线金瓜子排行失败: {e}")
+            raise ApiClientError(f"获取在线金瓜子排行失败: {e}") from e
 
     async def get_live_room_danmu(self, room_id: int) -> Dict[str, Any]:
         """
@@ -322,47 +339,52 @@ class ApiClient:
         Raises:
             ApiClientError: API 调用失败时抛出
         """
-        params = {'roomid': room_id}
+        params = {"roomid": room_id}
         headers = DefaultHeaders.LIVE_HEADERS.copy()
         headers["Referer"] = f"https://live.bilibili.com/{room_id}"
 
+        def _handle_api_error(data: Dict[str, Any]) -> None:
+            """处理 API 错误响应"""
+            raise ApiClientError(data.get("message", "未知 API 错误"))
+
         try:
-            response = await self._get_request(
+            response = await self._make_request(
                 ApiEndpoints.LIVE_ROOM_DANMU,
                 RequestType.GET,
                 params,
-                headers
+                headers,
             )
             data = response.json()
             if data.get("code") != 0:
-                raise ApiClientError(data.get("message", "未知 API 错误"))
+                _handle_api_error(data)
             return data["data"]
         except Exception as e:
             if isinstance(e, ApiClientError):
                 raise
-            raise ApiClientError(f"获取弹幕信息失败: {e}")
+            raise ApiClientError(f"获取弹幕信息失败: {e}") from e
 
-    def close(self):
-        """关闭 Session 连接"""
-        if hasattr(self, 'session'):
-            self.session.close()
+    async def aclose(self):
+        """关闭客户端连接"""
+        if hasattr(self, "client"):
+            await self.client.aclose()
 
-    def __enter__(self):
+    async def __aenter__(self):
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        self.close()
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        await self.aclose()
+
 
 api = ApiClient()
+
 
 async def main():
     """
     测试 API 客户端功能
     """
-    
 
     try:
-        with api:
+        async with api:
             # 测试获取直播间信息
             print("=== 获取直播间信息 ===")
             room_info = await api.get_live_room_info(32444461)
@@ -371,18 +393,20 @@ async def main():
             print(f"人气值: {room_info.get('online', 'N/A')}")
 
             # 获取主播 UID 用于其他 API 调用
-            ruid = room_info.get('uid')
+            ruid = room_info.get("uid")
             print(ruid)
             if ruid:
-                print(f"\n=== 获取大航海成员 ===")
+                print("\n=== 获取大航海成员 ===")
                 guard_info = await api.get_live_room_guard_tab(32444461, ruid, 1)
-                print(f"大航海成员数量: {sum(1 for item in guard_info['list'] + guard_info['top3'] if item.get('uinfo', {}).get('medal', {}).get('guard_level', 0) == 3)}")
+                print(
+                    f"大航海成员数量: {sum(1 for item in guard_info['list'] + guard_info['top3'] if item.get('uinfo', {}).get('medal', {}).get('guard_level', 0) == 3)}",
+                )
 
-                print(f"\n=== 获取粉丝团排行 ===")
+                print("\n=== 获取粉丝团排行 ===")
                 fans_rank = await api.get_live_room_fans_members_rank(ruid, 1)
                 print(f"粉丝团成员数量: {len(fans_rank['item'])}")
 
-            print(f"\n=== 获取弹幕信息 ===")
+            print("\n=== 获取弹幕信息 ===")
             danmu_info = await api.get_live_room_danmu(32444461)
             print(f"弹幕数量: {len(danmu_info.get('data', []))}")
 
@@ -391,6 +415,8 @@ async def main():
     except Exception as e:
         print(f"未知错误: {e}")
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     import asyncio
+
     asyncio.run(main())
