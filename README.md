@@ -26,7 +26,7 @@
 | 配置项 | 类型 | 默认值 | 说明 |
 |--------|------|--------|------|
 | `check_interval` | 整数 | 10 | 轮询间隔（秒），建议不要设置太短避免被限制 |
-| `notification_group` | 字符串 | "" | 需要发送通知的 QQ 群号 |
+| `notification_group` | 数组 | [] | 需要发送通知的 QQ 群号 |
 | `room_ids` | 数组 | [] | 监控的 B 站直播间房间号列表 |
 | `streamer_names` | 数组 | [] | 主播名字列表，与房间号一一对应 |
 
@@ -67,7 +67,7 @@ nekro_plugin_bilibili/
 ```json
 {
   "check_interval": 30,
-  "notification_group": "123456789",
+  "notification_group": [123456789,23456789],
   "room_ids": [12345678, 23456789],
   "streamer_names": ["主播A", "主播B"]
 }
