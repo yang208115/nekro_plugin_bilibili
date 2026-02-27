@@ -1,6 +1,6 @@
 import asyncio
 import contextlib
-from typing import Callable, Optional
+from typing import Callable, List, Optional
 
 from nekro_agent.api.core import logger
 
@@ -44,68 +44,97 @@ class PollManager:
 
     async def _poll_once(self):
         try:
-            res = await api.get_live_room_info(config.room_id)
-            if not res:
-                logger.error("获取直播间信息失败：API返回空数据")
+            room_ids = self._get_room_ids()
+            if not room_ids:
+                logger.warning("未配置房间号，跳过轮询")
                 return
 
-            room_info = self._convert_to_room_info(res)
-            logger.debug(
-                f"直播间状态解析: live_status={room_info.live_status}, title={room_info.title}"
-            )
-
-            # 获取插件路径用于保存JSON文件
             path = str(plugin.get_plugin_path()) + "/RoomStatus.json"
+            status_map = RoomStatus.load_status_map(path)
 
-            # 检查之前的开播记录
-            previous_status = RoomStatus.load_from_json(path)
+            for room_id in room_ids:
+                res = await api.get_live_room_info(room_id)
+                if not res:
+                    logger.error(f"获取直播间信息失败：API返回空数据，房间号 {room_id}")
+                    continue
 
-            if room_info.live_status:
-                # 当前开播状态
-                if previous_status and previous_status.live_status:
-                    # 之前已经有开播记录，不通知
-                    logger.debug(f"直播间 {room_info.room_id} 已在开播状态，跳过通知")
-                else:
-                    # 检测到新的开播，保存记录并通知
-                    current_status = RoomStatus(
-                        room_id=room_info.room_id, live_status=True
-                    )
-                    current_status.save_to_json(path)
+                room_info = self._convert_to_room_info(res, room_id)
+                logger.debug(
+                    f"直播间状态解析: live_status={room_info.live_status}, title={room_info.title}"
+                )
+
+                previous_status = status_map.get(room_info.room_id, False)
+
+                if room_info.live_status:
+                    if previous_status:
+                        logger.debug(
+                            f"直播间 {room_info.room_id} 已在开播状态，跳过通知"
+                        )
+                        continue
+
+                    status_map[room_info.room_id] = True
+                    RoomStatus.save_status_map(path, status_map)
                     logger.debug(
                         f"检测到新开播: 房间 {room_info.room_id}, 标题: {room_info.title}"
                     )
 
                     if self.call_back:
-                        # 确保回调函数是异步的
                         if asyncio.iscoroutinefunction(self.call_back):
                             await self.call_back(room_info, NotificationType.LIVE_START)
                         else:
                             self.call_back(room_info, NotificationType.LIVE_START)
                     else:
                         logger.warning("回调函数未设置")
-            else:
-                # 当前未开播状态，更新记录
-                if previous_status and previous_status.live_status:
-                    # 从开播状态变为未开播，更新记录
-                    current_status = RoomStatus(
-                        room_id=room_info.room_id, live_status=False
-                    )
-                    current_status.save_to_json(path)
-                    if self.call_back:
-                        # 确保回调函数是异步的
-                        if asyncio.iscoroutinefunction(self.call_back):
-                            await self.call_back(room_info, NotificationType.LIVE_END)
-                        else:
-                            self.call_back(room_info, NotificationType.LIVE_END)
                 else:
-                    logger.debug("主播未开播")
+                    if previous_status:
+                        status_map[room_info.room_id] = False
+                        RoomStatus.save_status_map(path, status_map)
+                        if self.call_back:
+                            if asyncio.iscoroutinefunction(self.call_back):
+                                await self.call_back(
+                                    room_info, NotificationType.LIVE_END
+                                )
+                            else:
+                                self.call_back(room_info, NotificationType.LIVE_END)
+                    else:
+                        logger.debug(f"直播间 {room_info.room_id} 未开播")
         except Exception as e:
             logger.error(f"轮询直播间信息时发生错误: {e}")
             import traceback
 
             logger.error(f"详细错误信息: {traceback.format_exc()}")
 
-    def _convert_to_room_info(self, api_data: dict) -> RoomInfo:
+    def _get_room_ids(self) -> List[int]:
+        room_ids: List[int] = []
+        raw_list = config.room_ids
+        if isinstance(raw_list, list):
+            for item in raw_list:
+                try:
+                    room_ids.append(int(item))
+                except (ValueError, TypeError):
+                    continue
+        elif isinstance(raw_list, str):
+            raw = raw_list.strip()
+            if raw:
+                for part in raw.split(","):
+                    part = part.strip()
+                    if not part:
+                        continue
+                    try:
+                        room_ids.append(int(part))
+                    except (ValueError, TypeError):
+                        continue
+
+        seen = set()
+        result: List[int] = []
+        for room_id in room_ids:
+            if room_id <= 0 or room_id in seen:
+                continue
+            seen.add(room_id)
+            result.append(room_id)
+        return result
+
+    def _convert_to_room_info(self, api_data: dict, fallback_room_id: int) -> RoomInfo:
         """
         将API响应数据转换为RoomInfo对象
 
@@ -123,17 +152,17 @@ class PollManager:
         room_id = api_data.get("room_id")
         if not room_id:
             logger.warning(
-                f"API返回的room_id为空，使用配置中的room_id: {config.room_id}"
+                f"API返回的room_id为空，使用配置中的room_id: {fallback_room_id}"
             )
-            room_id = config.room_id
+            room_id = fallback_room_id
         elif not isinstance(room_id, int):
             try:
                 room_id = int(room_id)
             except (ValueError, TypeError):
                 logger.warning(
-                    f"API返回的room_id格式无效: {room_id}，使用配置中的room_id: {config.room_id}"
+                    f"API返回的room_id格式无效: {room_id}，使用配置中的room_id: {fallback_room_id}"
                 )
-                room_id = config.room_id
+                room_id = fallback_room_id
 
         # 处理标题，确保是字符串
         title = api_data.get("title", "")

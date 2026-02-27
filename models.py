@@ -2,7 +2,7 @@ import json
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -97,7 +97,67 @@ class RoomStatus(BaseModel):
             with Path(file_path).open("r", encoding="utf-8") as f:
                 data = json.load(f)
 
-            return cls(**data)
+            if "room_id" in data and "live_status" in data:
+                return cls(**data)
+            return None
         except Exception as e:
             print(f"从JSON文件加载直播状态失败: {e}")
             return None
+
+    @classmethod
+    def load_status_map(cls, file_path: Optional[str] = None) -> Dict[int, bool]:
+        try:
+            if file_path is None:
+                file_path = str(Path(__file__).parent / "room_status.json")
+
+            if not Path(file_path).exists():
+                return {}
+
+            with Path(file_path).open("r", encoding="utf-8") as f:
+                data = json.load(f)
+
+            if isinstance(data, dict):
+                if "room_id" in data and "live_status" in data:
+                    room_id = int(data.get("room_id", 0))
+                    live_status = bool(data.get("live_status", False))
+                    return {room_id: live_status} if room_id else {}
+                if "rooms" in data and isinstance(data["rooms"], dict):
+                    result: Dict[int, bool] = {}
+                    for key, value in data["rooms"].items():
+                        try:
+                            room_id = int(key)
+                        except (ValueError, TypeError):
+                            continue
+                        result[room_id] = bool(value)
+                    return result
+            if isinstance(data, list):
+                result: Dict[int, bool] = {}
+                for item in data:
+                    if (
+                        isinstance(item, dict)
+                        and "room_id" in item
+                        and "live_status" in item
+                    ):
+                        try:
+                            room_id = int(item.get("room_id", 0))
+                        except (ValueError, TypeError):
+                            continue
+                        result[room_id] = bool(item.get("live_status", False))
+                return result
+            return {}
+        except Exception as e:
+            print(f"从JSON文件加载直播状态失败: {e}")
+            return {}
+
+    @classmethod
+    def save_status_map(cls, file_path: str, status_map: Dict[int, bool]) -> bool:
+        try:
+            Path(file_path).parent.mkdir(parents=True, exist_ok=True)
+            payload = {"rooms": {str(k): bool(v) for k, v in status_map.items()}}
+            with Path(file_path).open("w", encoding="utf-8") as f:
+                json.dump(payload, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            print(f"保存直播状态到JSON文件失败: {e}")
+            return False
+        else:
+            return True
