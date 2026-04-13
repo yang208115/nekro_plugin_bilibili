@@ -15,14 +15,14 @@ from .handlers import notice
 
 __all__ = ["plugin"]
 
-@plugin.mount_init_method()
+@plugin.on_enabled()
 async def init_plugin():
     """插件初始化"""
     logger.info("哔哩哔哩工具开始初始化")
     await pm.start()
     await pm.registerCallback(notice)
 
-@plugin.mount_cleanup_method()
+@plugin.on_disabled()
 async def cleanup_plugin():
     """插件清理"""
     await pm.stop()
